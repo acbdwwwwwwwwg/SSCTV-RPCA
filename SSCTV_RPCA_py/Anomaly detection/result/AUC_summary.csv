@@ -1,0 +1,4 @@
+dataset,method,auc
+PaviaU,RPCA_RX,
+PaviaU,RX,
+PaviaU,SSCTV,

@@ -1,0 +1,12 @@
+该目录为本噪声水平的运行输出。
+run_id=20260109_153538
+noise_param=sparse
+noise_level=0.200000
+gaussian_level=0.000000
+sparse_level=0.200000
+stripe_prob=0.000000
+stripe_strength=0.100000
+dataset=ALL
+case=ALL
+jobs=8
+seed=0

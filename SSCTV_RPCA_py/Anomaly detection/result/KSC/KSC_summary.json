@@ -1,0 +1,8 @@
+{
+  "dataset": "KSC",
+  "AUC": {
+    "RX": null,
+    "RPCA_RX": null,
+    "SSCTV": null
+  }
+}

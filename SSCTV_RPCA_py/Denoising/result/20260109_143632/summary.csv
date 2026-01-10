@@ -1,0 +1,2 @@
+dataset,num_cases,per_case_csv,avg_csv,error_file
+MAT,2,C:\Users\24455\PycharmProjects\PythonProject2\SSCTV_RPCA_py\Denoising\result\20260109_143632\MAT\metrics_per_case.csv,C:\Users\24455\PycharmProjects\PythonProject2\SSCTV_RPCA_py\Denoising\result\20260109_143632\MAT\metrics_average.csv,

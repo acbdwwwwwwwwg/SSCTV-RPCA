@@ -1,0 +1,8 @@
+{
+  "dataset": "chest_ct",
+  "AUC": {
+    "RX": null,
+    "RPCA_RX": null,
+    "SSCTV": null
+  }
+}

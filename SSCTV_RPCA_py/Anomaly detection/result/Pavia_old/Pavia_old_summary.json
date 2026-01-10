@@ -1,0 +1,8 @@
+{
+  "dataset": "Pavia_old",
+  "AUC": {
+    "RX": null,
+    "RPCA_RX": null,
+    "SSCTV": null
+  }
+}
