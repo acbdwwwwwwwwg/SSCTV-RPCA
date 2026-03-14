@@ -1,0 +1,50 @@
+[
+  {
+    "dataset": "Urban",
+    "method": "SSCTV",
+    "auc": 0.9713175657529586,
+    "time_sec": 293.1239146000007,
+    "score_min": 0.0069822768724291245,
+    "score_max": 0.1635665873047506,
+    "score_mean": 0.019055609498529656,
+    "score_std": 0.008421792224499661,
+    "lambda_used": 0.007856742013183862,
+    "notes": "Urban cropped to [:80, 188:288] following original MATLAB runner"
+  },
+  {
+    "dataset": "Urban",
+    "method": "SSCTV_LOGDET",
+    "auc": 0.9665968405158779,
+    "time_sec": 172.04636419999952,
+    "score_min": 0.0004811921339791072,
+    "score_max": 0.11559400973186537,
+    "score_mean": 0.01041671328116258,
+    "score_std": 0.006585582107189091,
+    "lambda_used": 0.007856742013183862,
+    "notes": "Urban cropped to [:80, 188:288] following original MATLAB runner"
+  },
+  {
+    "dataset": "Sandiego",
+    "method": "SSCTV",
+    "auc": 0.69404100889795,
+    "time_sec": 407.9595553999998,
+    "score_min": 0.018453552417720988,
+    "score_max": 0.23235681505019992,
+    "score_mean": 0.05769548884845457,
+    "score_std": 0.033016696970657816,
+    "lambda_used": 0.007273929674533079,
+    "notes": "Using Sandiego_new.mat + Sandiego_gt.mat directly"
+  },
+  {
+    "dataset": "Sandiego",
+    "method": "SSCTV_LOGDET",
+    "auc": 0.646209495294811,
+    "time_sec": 533.3922404999994,
+    "score_min": 0.0038491296231124975,
+    "score_max": 0.17384199659461577,
+    "score_mean": 0.03324453319570658,
+    "score_std": 0.021292393102603457,
+    "lambda_used": 0.007273929674533079,
+    "notes": "Using Sandiego_new.mat + Sandiego_gt.mat directly"
+  }
+]

@@ -1,0 +1,5 @@
+dataset,method,auc,time_sec,score_min,score_max,score_mean,score_std,lambda_used,notes
+Urban,SSCTV,0.971318,293.123915,0.006982,0.163567,0.019056,0.008422,0.00785674,"Urban cropped to [:80, 188:288] following original MATLAB runner"
+Urban,SSCTV_LOGDET,0.966597,172.046364,0.000481,0.115594,0.010417,0.006586,0.00785674,"Urban cropped to [:80, 188:288] following original MATLAB runner"
+Sandiego,SSCTV,0.694041,407.959555,0.018454,0.232357,0.057695,0.033017,0.00727393,Using Sandiego_new.mat + Sandiego_gt.mat directly
+Sandiego,SSCTV_LOGDET,0.646209,533.392240,0.003849,0.173842,0.033245,0.021292,0.00727393,Using Sandiego_new.mat + Sandiego_gt.mat directly
