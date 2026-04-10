@@ -1,21 +1,28 @@
+
 from __future__ import annotations
 
 """
-main_ssctv_repo_style.py
+main_ssctv_repo_style_sandiego_fix.py
 
 用途：
-    参考原始 self-controler/SSCTV-RPCA 仓库的 anomaly detection 管线，
-    只对 Urban 和 Sandiego 两个数据集比较：
-    1) 原始 SSCTV-RPCA
-    2) 新的 SSCTV-RPCA-LogDet
+    在不改动 Urban 处理逻辑的前提下，把 Sandiego 分支改成“尽量贴近
+    self-controler/SSCTV-RPCA 原仓库”的可复现实验脚本。
 
-核心对齐点（相对 main_ssctv.py 的修正）：
-    - 使用原仓库风格的数据预处理，而不是 center_align_gt + 全局 max-min。
-    - Urban 采用原仓库的裁剪：M(1:80,189:288,:)
-    - Sandiego 优先使用 Sandiego_new.mat；若只有 Sandiego.mat，则按原仓库删除坏波段并裁剪
-    - 使用原仓库风格的逐像素谱向 L2 归一化
-    - 使用原仓库 anomaly detection 的 lambda：1 / sqrt(no_rows * no_bands)
-    - GT 使用原仓库风格布局：Urban 右对齐，其余默认左上放置
+改动重点：
+    1) Urban 保持原来的 repo-style 逻辑不变。
+    2) Sandiego 不再只依赖 (Sandiego_new.mat + Sandiego_gt.mat)
+       或 (Sandiego.mat + PlaneGT2.mat)。
+    3) 新增对你当前已有文件的支持：
+       - Sandiego.mat + PlaneGT.mat
+       - Sandiego_new.mat + PlaneGT.mat
+       - Sandiego_new.mat + Sandiego_gt.mat
+    4) 默认优先走“repo-like best effort”路径：
+       - 若检测到上传的 Sandiego.mat 已经是 100x100x224 的裁剪版，
+         则无法精确还原原仓库 k==1 的 150x150 母场景；此时优先使用
+         Sandiego_new.mat(若存在) + PlaneGT.mat，作为最接近 repo 的
+         Sandiego1 评测对。
+       - 若拿到的是更大的原始 Sandiego.mat，则按原仓库 k==1 的
+         band 删除 + [:150, :150] 裁剪 + PlaneGT.mat。
 
 输出：
     默认保存到脚本所在目录（可用 --out_dir 覆盖）
@@ -48,6 +55,34 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 METHODS_DIR = ROOT / "methods"
 
+
+def candidate_data_dirs() -> List[Path]:
+    dirs = [
+        ROOT / "data",
+        ROOT,
+        Path.cwd() / "data",
+        Path.cwd(),
+    ]
+    out: List[Path] = []
+    seen = set()
+    for d in dirs:
+        try:
+            key = str(d.resolve())
+        except Exception:
+            key = str(d)
+        if key not in seen:
+            seen.add(key)
+            out.append(d)
+    return out
+
+
+def find_data_file(name: str) -> Path:
+    for d in candidate_data_dirs():
+        p = d / name
+        if p.exists():
+            return p
+    return candidate_data_dirs()[0] / name
+
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(METHODS_DIR) not in sys.path:
@@ -76,13 +111,17 @@ def ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
 
+def load_mat(path: Path) -> Dict:
+    return loadmat(str(path))
+
+
 def load_cube_from_mat(path: Path) -> np.ndarray:
-    md = loadmat(str(path))
+    md = load_mat(path)
     candidates = [(k, v) for k, v in md.items() if isinstance(v, np.ndarray) and v.ndim == 3]
     if not candidates:
         raise RuntimeError(f"No 3D cube found in {path.name}. Keys: {list(md.keys())[:10]}")
 
-    order = ["Urban", "Sandiego_new", "Sandiego", "PaviaU", "HSI", "Y", "data", "cube", "M", "X"]
+    order = ["Urban", "Sandiego_new", "Sandiego", "data", "PaviaU", "HSI", "Y", "cube", "M", "X"]
     for name in order:
         for k, v in candidates:
             if name.lower() in k.lower():
@@ -93,12 +132,12 @@ def load_cube_from_mat(path: Path) -> np.ndarray:
 
 
 def load_gt_from_mat(path: Path) -> np.ndarray:
-    md = loadmat(str(path))
+    md = load_mat(path)
     candidates = [(k, v) for k, v in md.items() if isinstance(v, np.ndarray) and v.ndim in (1, 2)]
     if not candidates:
         raise RuntimeError(f"No GT-like array found in {path.name}. Keys: {list(md.keys())[:10]}")
 
-    order = ["UGt", "gt", "GT", "Sandiego_gt", "PlaneGT2", "PlaneGT", "GroundTruth", "truth", "mask"]
+    order = ["UGt", "PlaneGT2", "PlaneGT", "Sandiego_gt", "map", "gt", "GT", "GroundTruth", "truth", "mask"]
     for name in order:
         for k, v in candidates:
             if name.lower() in k.lower():
@@ -113,13 +152,19 @@ def _to_hwb_cube(arr: np.ndarray) -> np.ndarray:
     if a.ndim != 3:
         raise ValueError(f"Cube must be 3D, got shape={a.shape}")
 
-    b_axis = int(np.argmin(a.shape))
-    if b_axis == 2:
+    s0, s1, s2 = a.shape
+
+    # 常见高光谱数据通常是 (H, W, B) 且 B 明显大于 H/W；
+    # 若是 (B, H, W) 或 (H, B, W)，则把最大的那个维度视作谱维。
+    if s2 >= s0 and s2 >= s1:
         cube = a
-    elif b_axis == 0:
+    elif s0 >= s1 and s0 >= s2:
         cube = np.transpose(a, (1, 2, 0))
-    else:
+    elif s1 >= s0 and s1 >= s2:
         cube = np.transpose(a, (0, 2, 1))
+    else:
+        cube = a
+
     return np.asarray(cube, dtype=np.float64)
 
 
@@ -135,8 +180,7 @@ def repo_pixel_l2_normalize_cube(cube: np.ndarray) -> np.ndarray:
 
 
 def repo_style_lambda(cube: np.ndarray) -> float:
-    h, w, b = cube.shape
-    _ = h
+    _, w, b = cube.shape
     return float(1.0 / np.sqrt(w * b))
 
 
@@ -155,24 +199,22 @@ def build_gt_repo_style(dataset_name: str, cube: np.ndarray, gt_raw: np.ndarray)
     ww = min(w, gw)
 
     if dataset_name.upper() == "URBAN":
-        # 原 MATLAB 对 Urban 使用右对齐写法：GT2(1:sa, end-sb+1:end) = GT
         out[0:hh, w - ww:w] = gt[0:hh, gw - ww:gw]
     else:
-        # 原 MATLAB 对其它这里用左上放置：GT2(1:sa, 1:sb) = GT
         out[0:hh, 0:ww] = gt[0:hh, 0:ww]
     return out
 
 
 def prepare_urban(data_dir: Path) -> DatasetPack:
-    cube_path = data_dir / "Urban.mat"
-    gt_path = data_dir / "UGt.mat"
+    _ = data_dir
+    cube_path = find_data_file("Urban.mat")
+    gt_path = find_data_file("UGt.mat")
     if not cube_path.exists():
         raise FileNotFoundError(f"Urban cube not found: {cube_path}")
     if not gt_path.exists():
         raise FileNotFoundError(f"Urban GT not found: {gt_path}")
 
     cube = load_cube_from_mat(cube_path)
-    # 原仓库：M = M(1:80,189:288,:)
     if cube.shape[0] >= 80 and cube.shape[1] >= 288:
         cube = cube[0:80, 188:288, :]
         notes = "Urban cropped to [:80, 188:288] following original MATLAB runner"
@@ -184,52 +226,163 @@ def prepare_urban(data_dir: Path) -> DatasetPack:
     return DatasetPack("Urban", cube, gt, notes)
 
 
-BAD_BANDS_ORIG = [
+# self-controler/SSCTV-RPCA 原仓库 Anomaly detection/main.m 中的删带方式
+BAD_BANDS_REPO_K1 = sorted(set([
     1, 2, 3, 4, 5, 6,
     33, 34, 35,
     94, 95, 96, 97,
     104, 105, 106, 107, 108, 109, 110,
     153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166,
     221, 222, 223, 224,
-]
-BAD_BANDS_ORIG = sorted(set(BAD_BANDS_ORIG))
+]))
+
+# 根据你上传的 Sandiego.mat(100x100x224) 与 Sandiego_new.mat(100x100x189) 的实际对应关系
+# 反推得到的删带方式：删除后可以精确得到上传的 Sandiego_new.mat
+BAD_BANDS_UPLOADED_TO_NEW189 = sorted(set([
+    1, 2, 3, 4, 5, 6,
+    33, 34, 35,
+    97,
+    107, 108, 109, 110, 111, 112, 113,
+    153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166,
+    221, 222, 223, 224,
+]))
 
 
 def remove_1based_bands(cube: np.ndarray, band_ids_1based: List[int]) -> np.ndarray:
-    b = cube.shape[2]
-    keep = [i for i in range(b) if (i + 1) not in set(band_ids_1based)]
+    band_ids = set(int(x) for x in band_ids_1based)
+    keep = [i for i in range(cube.shape[2]) if (i + 1) not in band_ids]
     return cube[:, :, keep]
 
 
-def prepare_sandiego(data_dir: Path) -> DatasetPack:
-    new_cube = data_dir / "Sandiego_new.mat"
-    new_gt = data_dir / "Sandiego_gt.mat"
-    old_cube = data_dir / "Sandiego.mat"
-    plane_gt2 = data_dir / "PlaneGT2.mat"
+def _maybe_get_embedded_map(path: Path) -> Optional[np.ndarray]:
+    if not path.exists():
+        return None
+    md = load_mat(path)
+    v = md.get("map", None)
+    if isinstance(v, np.ndarray) and v.ndim == 2:
+        return np.asarray(v, dtype=np.float64)
+    return None
 
-    if new_cube.exists() and new_gt.exists():
-        cube = load_cube_from_mat(new_cube)
-        gt_raw = load_gt_from_mat(new_gt)
-        gt = build_gt_repo_style("Sandiego", cube, gt_raw)
-        return DatasetPack("Sandiego", cube, gt, "Using Sandiego_new.mat + Sandiego_gt.mat directly")
 
-    if old_cube.exists() and plane_gt2.exists():
-        cube = load_cube_from_mat(old_cube)
-        cube = remove_1based_bands(cube, BAD_BANDS_ORIG)
-        if cube.shape[0] >= 210 and cube.shape[1] >= 380:
-            # 原仓库 k==3: M = M(111:210,181:380,:)
-            cube = cube[110:210, 180:380, :]
-        gt_raw = load_gt_from_mat(plane_gt2)
-        gt = build_gt_repo_style("Sandiego", cube, gt_raw)
-        return DatasetPack("Sandiego", cube, gt, "Using Sandiego.mat with original band removal and crop [110:210, 180:380]")
+def _note_gt_preference(has_plane: bool, has_newgt: bool) -> str:
+    if has_plane:
+        return "GT source: PlaneGT/map preferred for repo alignment"
+    if has_newgt:
+        return "GT source: Sandiego_gt fallback"
+    return "GT source unavailable"
+
+
+def prepare_sandiego(data_dir: Path, mode: str = "best_effort_repo") -> DatasetPack:
+    _ = data_dir
+    sandiego_mat = find_data_file("Sandiego.mat")
+    sandiego_new = find_data_file("Sandiego_new.mat")
+    sandiego_gt = find_data_file("Sandiego_gt.mat")
+    plane_gt = find_data_file("PlaneGT.mat")
+
+    old_cube = load_cube_from_mat(sandiego_mat) if sandiego_mat.exists() else None
+    new_cube = load_cube_from_mat(sandiego_new) if sandiego_new.exists() else None
+
+    gt_plane = load_gt_from_mat(plane_gt) if plane_gt.exists() else None
+    embedded_map = _maybe_get_embedded_map(sandiego_mat)
+    gt_new = load_gt_from_mat(sandiego_gt) if sandiego_gt.exists() else None
+
+    gt_repo = gt_plane if gt_plane is not None else embedded_map
+    gt_fallback = gt_new if gt_new is not None else gt_repo
+
+    if mode == "repo_mainm_186":
+        if old_cube is None or gt_repo is None:
+            raise FileNotFoundError(
+                "repo_mainm_186 模式需要 Sandiego.mat 和 PlaneGT.mat(或 Sandiego.mat 内置 map)。"
+            )
+        cube = remove_1based_bands(old_cube, BAD_BANDS_REPO_K1)
+        if cube.shape[0] >= 150 and cube.shape[1] >= 150:
+            cube = cube[0:150, 0:150, :]
+            note = "Sandiego via original repo k==1 style: remove repo bands + crop [:150, :150] + PlaneGT"
+        else:
+            note = (
+                "Sandiego via repo_mainm_186 best effort: current Sandiego.mat is already smaller than 150x150, "
+                "so only repo bad-band removal is applied"
+            )
+        gt = build_gt_repo_style("Sandiego", cube, gt_repo)
+        return DatasetPack("Sandiego", cube, gt, note)
+
+    if mode == "new189_planegt":
+        if new_cube is None:
+            if old_cube is None:
+                raise FileNotFoundError("new189_planegt 模式需要 Sandiego_new.mat，或可从 Sandiego.mat 构造。")
+            new_cube = remove_1based_bands(old_cube, BAD_BANDS_UPLOADED_TO_NEW189)
+        gt_src = gt_repo if gt_repo is not None else gt_new
+        if gt_src is None:
+            raise FileNotFoundError("new189_planegt 模式缺少 PlaneGT/map 和 Sandiego_gt。")
+        gt = build_gt_repo_style("Sandiego", new_cube, gt_src)
+        note = "Sandiego via 189-band packaged version, preferring PlaneGT/map for repo alignment"
+        return DatasetPack("Sandiego", new_cube, gt, note)
+
+    if mode == "new189_newgt":
+        if new_cube is None or gt_new is None:
+            raise FileNotFoundError("new189_newgt 模式需要 Sandiego_new.mat + Sandiego_gt.mat。")
+        gt = build_gt_repo_style("Sandiego", new_cube, gt_new)
+        note = "Sandiego via Sandiego_new.mat + Sandiego_gt.mat"
+        return DatasetPack("Sandiego", new_cube, gt, note)
+
+    if mode != "best_effort_repo":
+        raise ValueError(f"Unknown sandiego mode: {mode}")
+
+    # 默认：尽量贴近原仓库，但仅使用你现在已有的数据。
+    if old_cube is not None and gt_repo is not None:
+        # 情况 A：如果是大尺寸母场景，就尽量按原仓库 k==1 原样处理。
+        if old_cube.shape[0] >= 150 and old_cube.shape[1] >= 150:
+            cube = remove_1based_bands(old_cube, BAD_BANDS_REPO_K1)
+            cube = cube[0:150, 0:150, :]
+            gt = build_gt_repo_style("Sandiego", cube, gt_repo)
+            note = "Sandiego best_effort_repo: using original-style k==1 path (repo bad bands + crop [:150,:150] + PlaneGT)"
+            return DatasetPack("Sandiego", cube, gt, note)
+
+        # 情况 B：如果上传的 Sandiego.mat 已是 100x100x224 的裁剪版，无法精确还原 150x150 母场景。
+        # 此时优先用现成 Sandiego_new.mat(若存在) + PlaneGT/map，最接近 repo 的 Sandiego1 评测。
+        if old_cube.shape[:2] == (100, 100) and old_cube.shape[2] == 224:
+            if new_cube is not None and new_cube.shape[:2] == (100, 100):
+                cube = new_cube
+                gt = build_gt_repo_style("Sandiego", cube, gt_repo)
+                note = (
+                    "Sandiego best_effort_repo: uploaded Sandiego.mat is already a 100x100 cropped scene, "
+                    "so exact repo k==1 150x150 reconstruction is impossible; using provided Sandiego_new.mat "
+                    "+ PlaneGT/map as the closest repo-aligned pair"
+                )
+                return DatasetPack("Sandiego", cube, gt, note)
+
+            cube = remove_1based_bands(old_cube, BAD_BANDS_UPLOADED_TO_NEW189)
+            gt = build_gt_repo_style("Sandiego", cube, gt_repo)
+            note = (
+                "Sandiego best_effort_repo: uploaded Sandiego.mat is already a 100x100 cropped scene; "
+                "constructed 189-band cube from Sandiego.mat using uploaded-compatible bad-band list, and used PlaneGT/map"
+            )
+            return DatasetPack("Sandiego", cube, gt, note)
+
+        # 情况 C：其它旧版 Sandiego.mat，尽量用 PlaneGT / map 直接跑。
+        cube = old_cube
+        gt = build_gt_repo_style("Sandiego", cube, gt_repo)
+        note = "Sandiego best_effort_repo: using available Sandiego.mat + PlaneGT/map directly"
+        return DatasetPack("Sandiego", cube, gt, note)
+
+    if new_cube is not None and gt_repo is not None:
+        gt = build_gt_repo_style("Sandiego", new_cube, gt_repo)
+        note = "Sandiego best_effort_repo: using Sandiego_new.mat + PlaneGT/map (repo-aligned GT)"
+        return DatasetPack("Sandiego", new_cube, gt, note)
+
+    if new_cube is not None and gt_new is not None:
+        gt = build_gt_repo_style("Sandiego", new_cube, gt_new)
+        note = "Sandiego best_effort_repo fallback: using Sandiego_new.mat + Sandiego_gt.mat"
+        return DatasetPack("Sandiego", new_cube, gt, note)
 
     raise FileNotFoundError(
-        "Sandiego data not found. Expected either (Sandiego_new.mat + Sandiego_gt.mat) or (Sandiego.mat + PlaneGT2.mat)."
+        "Sandiego data not found. Expected one of: (Sandiego.mat + PlaneGT.mat), (Sandiego_new.mat + PlaneGT.mat), or (Sandiego_new.mat + Sandiego_gt.mat)."
     )
 
 
-def dataset_packs(data_dir: Path) -> List[DatasetPack]:
-    return [prepare_urban(data_dir), prepare_sandiego(data_dir)]
+def dataset_packs(data_dir: Path, sandiego_mode: str) -> List[DatasetPack]:
+    return [prepare_sandiego(data_dir, mode=sandiego_mode)]
+    # return [prepare_urban(data_dir), prepare_sandiego(data_dir, mode=sandiego_mode)]
 
 
 def roc_curve_pf_pd(scores: np.ndarray, gt: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -323,7 +476,15 @@ def save_roc(pf: np.ndarray, pd: np.ndarray, auc: float, title: str, out_png: Pa
 def detector_SSCTV(cube: np.ndarray, lam: float, opts: Optional[Dict] = None) -> np.ndarray:
     if ssctv_rpca is None:
         raise RuntimeError("methods/ssctv_rpca.py not found or import failed.")
-    local_opts = {'lambda_': lam, 'lambdaVal': lam, 'lambda_val': lam, 'lambda': lam, 'maxIter': 1000, 'rho': 1.03, 'tol': 1e-6}
+    local_opts = {
+        "lambda_": lam,
+        "lambdaVal": lam,
+        "lambda_val": lam,
+        "lambda": lam,
+        "maxIter": 1000,
+        "rho": 1.03,
+        "tol": 1e-6,
+    }
     if opts:
         local_opts.update(opts)
     try:
@@ -424,6 +585,18 @@ def parse_args() -> argparse.Namespace:
         description="Compare SSCTV and SSCTV_LOGDET on Urban and Sandiego using original repository-style anomaly detection preprocessing."
     )
     p.add_argument("--out_dir", type=str, default=str(ROOT), help="Output directory. Default: script folder")
+    p.add_argument(
+        "--sandiego_mode",
+        type=str,
+        default="best_effort_repo",
+        choices=["best_effort_repo", "repo_mainm_186", "new189_planegt", "new189_newgt"],
+        help=(
+            "Sandiego loading mode. best_effort_repo=default and recommended; "
+            "repo_mainm_186=force original repo bad bands; "
+            "new189_planegt=force 189-band cube with PlaneGT/map; "
+            "new189_newgt=force Sandiego_new + Sandiego_gt."
+        ),
+    )
     p.add_argument("--ssctv_maxIter", type=int, default=1000)
     p.add_argument("--ssctv_rho", type=float, default=1.03)
     p.add_argument("--ssctv_tol", type=float, default=1e-6)
@@ -441,7 +614,7 @@ def main() -> None:
     out_dir = Path(args.out_dir).expanduser().resolve()
     ensure_dir(out_dir)
 
-    packs = dataset_packs(DATA_DIR)
+    packs = dataset_packs(DATA_DIR, args.sandiego_mode)
     for ds in packs:
         save_binary_map(ds.gt, out_dir / f"{ds.name}_GT_repo_style.png")
 
@@ -490,3 +663,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
