@@ -38,9 +38,9 @@ except Exception:
     ssctv_rpca = None
 
 try:
-    from methods.ssctv_rpca_logdet import ssctv_rpca_logdet
+    from methods.ssctv_log_sparsity import ssctv_log_sparsity
 except Exception:
-    ssctv_rpca_logdet = None
+    ssctv_log_sparsity = None
 
 
 @dataclass
@@ -194,7 +194,6 @@ def prepare_urban(data_dir: Path) -> DatasetPack:
     return DatasetPack("Urban", cube, gt, notes)
 
 
-# self-controler/SSCTV-RPCA 原仓库 Anomaly detection/main.m 中的删带方式
 BAD_BANDS_REPO_K1 = sorted(set([
     1, 2, 3, 4, 5, 6,
     33, 34, 35,
@@ -204,7 +203,6 @@ BAD_BANDS_REPO_K1 = sorted(set([
     221, 222, 223, 224,
 ]))
 
-# 根据上传的 Sandiego.mat(100x100x224) 与 Sandiego_new.mat(100x100x189) 的对应关系反推的删带方式
 BAD_BANDS_UPLOADED_TO_NEW189 = sorted(set([
     1, 2, 3, 4, 5, 6,
     33, 34, 35,
@@ -296,9 +294,7 @@ def prepare_sandiego(data_dir: Path, mode: str = "best_effort_repo") -> DatasetP
     if mode != "best_effort_repo":
         raise ValueError(f"Unknown sandiego mode: {mode}")
 
-    # 默认：尽量贴近原仓库，但仅使用现在已有的数据
     if old_cube is not None and gt_repo is not None:
-        # 情况 A：如果是大尺寸母场景，就尽量按原仓库 k==1 原样处理
         if old_cube.shape[0] >= 150 and old_cube.shape[1] >= 150:
             cube = remove_1based_bands(old_cube, BAD_BANDS_REPO_K1)
             cube = cube[0:150, 0:150, :]
@@ -306,7 +302,6 @@ def prepare_sandiego(data_dir: Path, mode: str = "best_effort_repo") -> DatasetP
             note = "Sandiego best_effort_repo: using original-style k==1 path (repo bad bands + crop [:150,:150] + PlaneGT)"
             return DatasetPack("Sandiego", cube, gt, note)
 
-        # 情况 B：如果上传的 Sandiego.mat 已是 100x100x224 的裁剪版，无法精确还原 150x150 母场景
         if old_cube.shape[:2] == (100, 100) and old_cube.shape[2] == 224:
             if new_cube is not None and new_cube.shape[:2] == (100, 100):
                 cube = new_cube
@@ -326,7 +321,6 @@ def prepare_sandiego(data_dir: Path, mode: str = "best_effort_repo") -> DatasetP
             )
             return DatasetPack("Sandiego", cube, gt, note)
 
-        # 情况 C：其它旧版 Sandiego.mat，尽量用 PlaneGT / map 直接跑
         cube = old_cube
         gt = build_gt_repo_style("Sandiego", cube, gt_repo)
         note = "Sandiego best_effort_repo: using available Sandiego.mat + PlaneGT/map directly"
@@ -348,8 +342,8 @@ def prepare_sandiego(data_dir: Path, mode: str = "best_effort_repo") -> DatasetP
 
 
 def dataset_packs(data_dir: Path, sandiego_mode: str) -> List[DatasetPack]:
-    return [prepare_urban(data_dir), prepare_sandiego(data_dir, mode=sandiego_mode)]
-    # return [prepare_sandiego(data_dir, mode=sandiego_mode)]
+    # return [prepare_urban(data_dir), prepare_sandiego(data_dir, mode=sandiego_mode)]
+    return [prepare_sandiego(data_dir, mode=sandiego_mode)]
 
 
 def roc_curve_pf_pd(scores: np.ndarray, gt: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -487,34 +481,32 @@ def detector_SSCTV(cube: np.ndarray, lam: float, opts: Optional[Dict] = None) ->
     return _score_from_residual(e, cube)
 
 
-def detector_SSCTV_LOGDET(cube: np.ndarray, lam: float, opts: Optional[Dict] = None) -> np.ndarray:
-    if ssctv_rpca_logdet is None:
-        raise RuntimeError("methods/ssctv_rpca_logdet.py not found or import failed.")
-    local_opts = dict(
-        lambda1=lam,
-        lambda_1=lam,
-        lambda2=0.1 * lam,
-        lambda_2=0.1 * lam,
-        alpha1=1.0,
-        alpha2=1.0,
-        maxIter=1000,
-        rho=1.03,
-        tol=1e-6,
-    )
+def detector_SSCTV_LOGSPARSITY(cube: np.ndarray, lam: float, opts: Optional[Dict] = None) -> np.ndarray:
+    if ssctv_log_sparsity is None:
+        raise RuntimeError("methods/ssctv_log_sparsity.py not found or import failed.")
+    local_opts = {
+        "lambda": lam,
+        "lambda_": lam,
+        "lambdaVal": lam,
+        "lambda_val": lam,
+        "maxIter": 1000,
+        "rho": 1.03,
+        "tol": 1e-6,
+    }
     if opts:
         local_opts.update(opts)
     try:
-        _, s = ssctv_rpca_logdet(cube, opts=local_opts)
+        _, s = ssctv_log_sparsity(cube, opts=local_opts)
     except TypeError:
-        _, s = ssctv_rpca_logdet(cube, **local_opts)
+        _, s = ssctv_log_sparsity(cube, **local_opts)
     return _score_from_residual(s, cube)
 
 
 def method_score(cube_norm: np.ndarray, method: str, base_lam: float, opts: Dict) -> np.ndarray:
     if method.upper() == "SSCTV":
         return detector_SSCTV(cube_norm, base_lam, opts)
-    elif method.upper() in ("SSCTV_LOGDET", "SSCTV-LOGDET", "LOGDET"):
-        return detector_SSCTV_LOGDET(cube_norm, base_lam, opts)
+    elif method.upper() in ("SSCTV_LOGSPARSITY", "SSCTV-LOGSPARSITY", "LOGSPARSITY"):
+        return detector_SSCTV_LOGSPARSITY(cube_norm, base_lam, opts)
     else:
         raise RuntimeError(f"Unknown method: {method}")
 
@@ -527,9 +519,9 @@ def run_one_method(dataset: DatasetPack, method: str, out_dir: Path, method_opts
     if method.upper() == "SSCTV":
         score = detector_SSCTV(cube, lam, method_opts)
         method_name = "SSCTV"
-    elif method.upper() in ("SSCTV_LOGDET", "SSCTV-LOGDET", "LOGDET"):
-        score = detector_SSCTV_LOGDET(cube, lam, method_opts)
-        method_name = "SSCTV_LOGDET"
+    elif method.upper() in ("SSCTV_LOGSPARSITY", "SSCTV-LOGSPARSITY", "LOGSPARSITY"):
+        score = detector_SSCTV_LOGSPARSITY(cube, lam, method_opts)
+        method_name = "SSCTV_LOGSPARSITY"
     else:
         raise RuntimeError(f"Unknown method: {method}")
 
@@ -630,33 +622,22 @@ def build_ssctv_candidates(base_lam: float, args: argparse.Namespace) -> List[Di
     return out
 
 
-def build_logdet_candidates(base_lam: float, args: argparse.Namespace) -> List[Dict]:
-    lambda1_scales = parse_float_list(args.logdet_lambda1_scales)
-    lambda2_ratios = parse_float_list(args.logdet_lambda2_ratios)
-    alpha_list = parse_float_list(args.logdet_alpha_list)
-
+def build_logsparsity_candidates(base_lam: float, args: argparse.Namespace) -> List[Dict]:
+    scales = parse_float_list(args.logsparsity_lambda_scales)
     out = []
-    for s1 in lambda1_scales:
-        lam1 = float(base_lam * s1)
-        for r2 in lambda2_ratios:
-            lam2 = float(lam1 * r2)
-            for a in alpha_list:
-                out.append({
-                    "lambda1": lam1,
-                    "lambda_1": lam1,
-                    "lambda2": lam2,
-                    "lambda_2": lam2,
-                    "alpha1": float(a),
-                    "alpha2": float(a),
-                    "maxIter": args.logdet_maxIter,
-                    "rho": args.logdet_rho,
-                    "tol": args.logdet_tol,
-                    "_meta_lambda1_scale": s1,
-                    "_meta_lambda1_abs": lam1,
-                    "_meta_lambda2_ratio": r2,
-                    "_meta_lambda2_abs": lam2,
-                    "_meta_alpha": a,
-                })
+    for s in scales:
+        lam = float(base_lam * s)
+        out.append({
+            "lambda": lam,
+            "lambda_": lam,
+            "lambdaVal": lam,
+            "lambda_val": lam,
+            "maxIter": args.logsparsity_maxIter,
+            "rho": args.logsparsity_rho,
+            "tol": args.logsparsity_tol,
+            "_meta_lambda_scale": s,
+            "_meta_lambda_abs": lam,
+        })
     return out
 
 
@@ -778,7 +759,7 @@ def save_summary(results: List[Dict], out_dir: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Fair comparison of SSCTV and SSCTV_LOGDET using the same validation/hold-out protocol."
+        description="Fair comparison of SSCTV and SSCTV_LOGSPARSITY using the same validation/hold-out protocol."
     )
     p.add_argument("--out_dir", type=str, default=str(ROOT), help="Output directory. Default: script folder")
     p.add_argument(
@@ -794,27 +775,21 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
-    # tuning split
     p.add_argument("--seed", type=int, default=3407)
     p.add_argument("--tune_pos_frac", type=float, default=0.5)
     p.add_argument("--tune_neg_pos_ratio", type=int, default=20)
     p.add_argument("--tune_neg_cap", type=int, default=20000)
 
-    # SSCTV base solver
     p.add_argument("--ssctv_maxIter", type=int, default=1000)
     p.add_argument("--ssctv_rho", type=float, default=1.03)
     p.add_argument("--ssctv_tol", type=float, default=1e-6)
 
-    # LOGDET base solver
-    p.add_argument("--logdet_maxIter", type=int, default=1000)
-    p.add_argument("--logdet_rho", type=float, default=1.03)
-    p.add_argument("--logdet_tol", type=float, default=1e-6)
+    p.add_argument("--logsparsity_maxIter", type=int, default=1000)
+    p.add_argument("--logsparsity_rho", type=float, default=1.03)
+    p.add_argument("--logsparsity_tol", type=float, default=1e-6)
 
-    # fair tuning grids
-    p.add_argument("--ssctv_lambda_scales", type=str, default="0.75,1.0,1.25")
-    p.add_argument("--logdet_lambda1_scales", type=str, default="0.75,1.0,1.25")
-    p.add_argument("--logdet_lambda2_ratios", type=str, default="0.03,0.1,0.3")
-    p.add_argument("--logdet_alpha_list", type=str, default="0.5,1.0,2.0")
+    p.add_argument("--ssctv_lambda_scales", type=str, default="0.75")
+    p.add_argument("--logsparsity_lambda_scales", type=str, default="0.75,1.0,1.25")
 
     return p.parse_args()
 
@@ -876,36 +851,33 @@ def main() -> None:
         })
         results.append(ssctv_res)
 
-        logdet_candidates = build_logdet_candidates(base_lam, args)
-        best_logdet_opts, logdet_records = tune_method(
+        logsparsity_candidates = build_logsparsity_candidates(base_lam, args)
+        best_logsparsity_opts, logsparsity_records = tune_method(
             dataset=ds,
-            method="SSCTV_LOGDET",
+            method="SSCTV_LOGSPARSITY",
             cube_norm=cube_norm,
             base_lam=base_lam,
             tune_mask=tune_mask,
-            candidate_opts=logdet_candidates,
+            candidate_opts=logsparsity_candidates,
             out_dir=out_dir,
         )
 
-        logdet_score = method_score(cube_norm, "SSCTV_LOGDET", base_lam, best_logdet_opts)
-        logdet_auc_holdout = auc_on_mask(logdet_score, ds.gt, test_mask)
-        logdet_auc_tune_best = max(r["auc_tune"] for r in logdet_records)
+        logsparsity_score = method_score(cube_norm, "SSCTV_LOGSPARSITY", base_lam, best_logsparsity_opts)
+        logsparsity_auc_holdout = auc_on_mask(logsparsity_score, ds.gt, test_mask)
+        logsparsity_auc_tune_best = max(r["auc_tune"] for r in logsparsity_records)
 
-        print(f"[BEST] {ds.name} | SSCTV_LOGDET | holdout AUC={logdet_auc_holdout:.6f}", flush=True)
+        print(f"[BEST] {ds.name} | SSCTV_LOGSPARSITY | holdout AUC={logsparsity_auc_holdout:.6f}", flush=True)
 
-        logdet_res = run_one_method(ds, "SSCTV_LOGDET", out_dir, best_logdet_opts)
-        logdet_best_meta = max(logdet_records, key=lambda r: r["auc_tune"])
-        logdet_res.update({
-            "auc_holdout": float(logdet_auc_holdout),
-            "auc_tune_best": float(logdet_auc_tune_best),
-            "selected_lambda1_scale": float(logdet_best_meta["lambda1_scale"]),
-            "selected_lambda1_abs": float(logdet_best_meta["lambda1_abs"]),
-            "selected_lambda2_ratio": float(logdet_best_meta["lambda2_ratio"]),
-            "selected_lambda2_abs": float(logdet_best_meta["lambda2_abs"]),
-            "selected_alpha": float(logdet_best_meta["alpha"]),
+        logsparsity_res = run_one_method(ds, "SSCTV_LOGSPARSITY", out_dir, best_logsparsity_opts)
+        logsparsity_best_meta = max(logsparsity_records, key=lambda r: r["auc_tune"])
+        logsparsity_res.update({
+            "auc_holdout": float(logsparsity_auc_holdout),
+            "auc_tune_best": float(logsparsity_auc_tune_best),
+            "selected_lambda_scale": float(logsparsity_best_meta["lambda_scale"]),
+            "selected_lambda_abs": float(logsparsity_best_meta["lambda_abs"]),
             "selection_protocol": "same validation split, then hold-out comparison",
         })
-        results.append(logdet_res)
+        results.append(logsparsity_res)
 
     save_summary(results, out_dir)
 
